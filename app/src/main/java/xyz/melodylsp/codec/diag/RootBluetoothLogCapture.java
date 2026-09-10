@@ -29,6 +29,12 @@ public final class RootBluetoothLogCapture {
     private static final long ROOT_COMMAND_TIMEOUT_MS = 12_000L;
     private static final int MAX_DETAIL_CHARS = 320;
 
+    static final String AUDIO_LOGCAT_FILTERS =
+            "MelodyPcmMono:V AudioSystem:V AudioFlinger:V AudioPolicyService:V "
+                    + "AudioPolicyManager:V APM_AudioPolicyManager:V AS.AudioService:V "
+                    + "AudioService:V AudioTrack:V BTAudioSessionAidl:V btaudio_offload_aidl:V "
+                    + "libc:F DEBUG:F AndroidRuntime:E ";
+
     private static final String LOGCAT_FILTERS =
             "MelodyCodecLsp:V "
                     + "MelodyLhdcGov:V "
@@ -37,7 +43,8 @@ public final class RootBluetoothLogCapture {
                     + "bluetooth-a2dp:V "
                     + "soc_bta_av:V "
                     + "a2dp_vendor_lhdcv5:V "
-                    + "a2dp_vendor_lhdcv5_encoder:V '*:S'";
+                    + "a2dp_vendor_lhdcv5_encoder:V "
+                    + AUDIO_LOGCAT_FILTERS + "'*:S'";
 
     private RootBluetoothLogCapture() {
     }

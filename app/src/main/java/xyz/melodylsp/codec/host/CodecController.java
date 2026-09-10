@@ -50,6 +50,7 @@ import xyz.melodylsp.codec.bridge.LhdcQualityPolicy;
 import xyz.melodylsp.codec.bt.BluetoothCodecReflect;
 import xyz.melodylsp.codec.diag.DiagnosticEvents;
 import xyz.melodylsp.codec.label.CodecLabelTable;
+import xyz.melodylsp.codec.mono.AutoMonoHostClient;
 import xyz.melodylsp.codec.storage.PreferenceStore;
 import xyz.melodylsp.codec.util.MLog;
 import xyz.melodylsp.codec.util.TrustedBroadcasts;
@@ -104,6 +105,7 @@ public final class CodecController {
     /** Latest A2DP state is device-scoped; a single global value can write earphone A to B. */
     private final Map<String, CodecSnapshot> lastSnapshotsByMac = new HashMap<>();
     private final xyz.melodylsp.codec.leaudio.LeAudioManager leAudioManager;
+    private final AutoMonoHostClient autoMonoClient;
     private final Set<String> classicRestorePending = new LinkedHashSet<>();
     private final Map<String, Long> classicRestoreDeadlines = new HashMap<>();
     private final Map<String, CodecSnapshot> lastHighQualitySnapshots = new HashMap<>();
@@ -138,8 +140,10 @@ public final class CodecController {
                 this.context, bridge, prefs, routeReadiness);
         this.replayer.start();
         this.bridge.addSnapshotListener(this::onPushedSnapshot);
+        this.autoMonoClient = AutoMonoHostClient.get(this.context);
         this.leAudioManager = new xyz.melodylsp.codec.leaudio.LeAudioManager(
                 this.context, this::onLeAudioStateChanged);
+        this.autoMonoClient.addListener(this::onAutoMonoStateChanged);
         registerActivityCleanup();
         registerMemorySnapshotRequestReceiver();
         prefs.emitDiagnosticSnapshot("controller_ready");
@@ -518,9 +522,11 @@ public final class CodecController {
     private void onLeAudioStateChanged(String mac) {
         boolean leOn = leAudioManager.isEnabled(mac);
         boolean leConnected = leAudioManager.isConnected(mac);
+        if (deviceKey(mac) != null) autoMonoClient.query(mac);
         for (Subscription sub : subscriptions.values()) {
             if (!isSubscriptionActive(sub) || !sameDevice(sub.mac, mac)) continue;
             applyLeAudioToSwitch(sub);
+            applyAutoMonoToSwitch(sub);
             if (leOn) {
                 if (isClassicRestorePending(mac)) {
                     // Disable is in flight and stale LE replies may still report enabled=true.
@@ -671,6 +677,7 @@ public final class CodecController {
 
         wireClickListeners(sub);
         wireRememberToggle(sub);
+        wireAutoMonoToggle(sub);
         wireLeAudio(sub);
         sub.registerReceiver();
         mainHandler.post(() -> {
@@ -806,8 +813,17 @@ public final class CodecController {
         }
         discoverMelodyDialogBuilders(activity, builderNames);
         for (String name : builderNames) {
+            Class<?> builderCls;
             try {
-                Class<?> builderCls = Class.forName(name, false, activity.getClassLoader());
+                builderCls = Class.forName(name, false, activity.getClassLoader());
+            } catch (ClassNotFoundException ignored) {
+                // Candidate names cover several host versions; absence is ordinary discovery.
+                continue;
+            } catch (Throwable failure) {
+                MLog.w("headset confirmation dialog class failed: " + name, failure);
+                continue;
+            }
+            try {
                 if (!isHostCouiDialogBuilderClass(builderCls)) continue;
                 Object builder = newMelodyDialogBuilder(activity, builderCls);
                 if (builder == null) continue;
@@ -1212,6 +1228,178 @@ public final class CodecController {
                     return handleRememberChange(sub, args[1]);
                 });
         invokeSetChangeListener(sub.prefs.rememberToggle, listener, changeListenerCls);
+    }
+
+    /** The mono setting belongs to the Bluetooth owner, independent of codec memory. */
+    private void wireAutoMonoToggle(Subscription sub) {
+        if (sub.prefs.autoMonoToggle == null) return;
+        ClassLoader cl = context.getClassLoader();
+        Class<?> changeListenerCls = resolveChangeListenerInterface(cl, sub.prefs.autoMonoToggle);
+        if (changeListenerCls != null) {
+            Object listener = Proxy.newProxyInstance(cl, new Class[]{changeListenerCls},
+                    (proxy, method, args) -> {
+                        if (args == null || args.length < 2 || !(args[1] instanceof Boolean)) {
+                            return false;
+                        }
+                        handleAutoMonoChange(sub, (Boolean) args[1]);
+                        // Render the client's pending / confirmed value instead of persisting
+                        // into the host preference store or racing a second UI surface.
+                        return false;
+                    });
+            invokeSetChangeListener(sub.prefs.autoMonoToggle, listener, changeListenerCls);
+        } else {
+            MLog.w("automatic mono preference change listener not resolvable");
+        }
+        applyAutoMonoToSwitch(sub);
+        if (deviceKey(sub.mac) != null) autoMonoClient.query(sub.mac);
+    }
+
+    private void handleAutoMonoChange(Subscription sub, boolean enable) {
+        if (!isSubscriptionActive(sub) || sub.autoMonoRendering || deviceKey(sub.mac) == null) return;
+        AutoMonoHostClient.Status status = autoMonoClient.status(sub.mac);
+        if (status.pending || status.enabled == enable) return;
+        Activity activity = resolveLiveActivity(sub);
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) return;
+        String requestedMac = sub.mac;
+        String title = enable ? Strings.AUTO_MONO_DIALOG_TITLE_ON : Strings.AUTO_MONO_DIALOG_TITLE_OFF;
+        String message = enable ? Strings.AUTO_MONO_DIALOG_MSG_ON : Strings.AUTO_MONO_DIALOG_MSG_OFF;
+        String positive = enable ? xyz.melodylsp.codec.leaudio.LeAudioStrings.CONFIRM
+                : xyz.melodylsp.codec.leaudio.LeAudioStrings.CONFIRM_OFF;
+        String negative = xyz.melodylsp.codec.leaudio.LeAudioStrings.CANCEL;
+        ConfirmAction confirmed = () -> {
+            if (!isSubscriptionActive(sub) || !sameDevice(sub.mac, requestedMac)
+                    || activity.isFinishing() || activity.isDestroyed()
+                    || resolveLiveActivity(sub) != activity) return;
+            requestAutoMonoToggle(sub, requestedMac, enable);
+        };
+        if (showMelodyAlertDialog(activity, title, message, positive, negative, confirmed)) return;
+        if (showStyledAppCompatDialog(activity, title, message, positive, negative, confirmed)) return;
+        try {
+            new AlertDialog.Builder(activity)
+                    .setTitle(title)
+                    .setMessage(message)
+                    .setPositiveButton(positive, (dialog, which) -> {
+                        dialog.dismiss();
+                        confirmed.run();
+                    })
+                    .setNegativeButton(negative, (dialog, which) -> dialog.dismiss())
+                    .setCancelable(true)
+                    .show();
+        } catch (Throwable t) {
+            MLog.w("automatic mono confirmation dialog failed", t);
+        }
+    }
+
+    /** Only the confirmation button may send a setting change to the Bluetooth owner. */
+    private void requestAutoMonoToggle(Subscription sub, String requestedMac, boolean enable) {
+        if (!isSubscriptionActive(sub) || !sameDevice(sub.mac, requestedMac)) return;
+        AutoMonoHostClient.Status status = autoMonoClient.status(requestedMac);
+        if (status.pending || status.enabled == enable) return;
+        try {
+            autoMonoClient.setEnabled(requestedMac, enable);
+            applyAutoMonoToSwitch(sub);
+        } catch (Throwable t) {
+            MLog.w("automatic mono preference request failed", t);
+            Toast.makeText(context, Strings.AUTO_MONO_TOAST_REQUEST_FAILED, Toast.LENGTH_SHORT).show();
+            applyAutoMonoToSwitch(sub);
+        }
+    }
+
+    private void onAutoMonoStateChanged(String mac) {
+        mainHandler.post(() -> {
+            for (Subscription sub : subscriptions.values()) {
+                if (isSubscriptionActive(sub) && sameDevice(sub.mac, mac)) {
+                    applyAutoMonoToSwitch(sub);
+                }
+            }
+        });
+    }
+
+    private void applyAutoMonoToSwitch(Subscription sub) {
+        if (!isSubscriptionActive(sub) || sub.prefs.autoMonoToggle == null) return;
+        Object toggle = sub.prefs.autoMonoToggle;
+        AutoMonoHostClient.Status status = autoMonoClient.status(sub.mac);
+        boolean hasDevice = deviceKey(sub.mac) != null;
+        // An A2DP disconnect during LE Audio is not an earphone disconnect. Unknown connection
+        // state may still be preconfigured; a saved enabled setting can always be turned off.
+        boolean disconnected = Boolean.FALSE.equals(sub.connected)
+                && !leAudioManager.isConnected(sub.mac);
+        sub.autoMonoRendering = true;
+        try {
+            PrefRef.setVisible(toggle, true);
+            PrefRef.setChecked(toggle, status.enabled);
+            PrefRef.setDisabled(toggle,
+                    !hasDevice || status.pending || (disconnected && !status.enabled));
+            PrefRef.setSummary(toggle, autoMonoSummary(status, hasDevice, disconnected)
+                    + "\n" + Strings.AUTO_MONO_EXPERIMENTAL_NOTE);
+        } finally {
+            sub.autoMonoRendering = false;
+        }
+    }
+
+    static String autoMonoSummary(
+            AutoMonoHostClient.Status status, boolean hasDevice, boolean disconnected) {
+        if (!hasDevice) return Strings.AUTO_MONO_SUMMARY_NO_DEVICE;
+        if (status.pending) return status.enabled ? "正在开启…" : "正在关闭…";
+        if (!status.available) {
+            return status.updatedAtMs == 0L ? Strings.AUTO_MONO_SUMMARY_WAITING_SERVICE
+                    : Strings.autoMonoReason(status.reason);
+        }
+        if ("restoring".equals(status.mode)) return Strings.AUTO_MONO_SUMMARY_RESTORING;
+        if (!status.enabled) {
+            return "unavailable".equals(status.mode)
+                    ? Strings.AUTO_MONO_SUMMARY_OFF + " · " + Strings.autoMonoReason(status.reason)
+                    : Strings.AUTO_MONO_SUMMARY_OFF;
+        }
+        if (disconnected || "disconnected".equals(status.reason)) {
+            return Strings.AUTO_MONO_SUMMARY_WAITING_CONNECTION;
+        }
+        if ("mono".equals(status.mode)) {
+            String ear = autoMonoSingleEarLabel(status);
+            return ear.isEmpty() ? Strings.AUTO_MONO_SUMMARY_MERGED
+                    : ear + " · " + Strings.AUTO_MONO_SUMMARY_MERGED;
+        }
+        if ("system_mono".equals(status.mode)) return Strings.AUTO_MONO_SUMMARY_SYSTEM_MONO;
+        if ("stereo".equals(status.mode)) {
+            if ((status.knownMask & 3) == 3 && (status.inEarMask & 3) == 3) {
+                return Strings.AUTO_MONO_SUMMARY_STEREO;
+            }
+            if ((status.knownMask & 3) == 3 && (status.inEarMask & 3) == 0) {
+                return Strings.AUTO_MONO_SUMMARY_NEITHER;
+            }
+        }
+        if ("unavailable".equals(status.mode) || "suspended".equals(status.mode)) {
+            return "已暂停 · " + Strings.autoMonoReason(status.reason);
+        }
+        if (status.reason != null && !status.reason.isEmpty()
+                && !"unknown_ears".equals(status.reason)) {
+            String ear = autoMonoSingleEarLabel(status);
+            String reason = Strings.autoMonoReason(status.reason);
+            return ear.isEmpty() ? reason : ear + " · " + reason;
+        }
+        if (!status.hookReady) return Strings.AUTO_MONO_SUMMARY_WAITING_HOOK;
+        if ("unknown_ears".equals(status.reason) || (status.knownMask & 3) != 3) {
+            if ((status.knownMask & 3) == 1) {
+                return ((status.inEarMask & 1) != 0 ? "左耳已佩戴" : "左耳未佩戴")
+                        + " · 等待右耳状态";
+            }
+            if ((status.knownMask & 3) == 2) {
+                return ((status.inEarMask & 2) != 0 ? "右耳已佩戴" : "右耳未佩戴")
+                        + " · 等待左耳状态";
+            }
+            return Strings.AUTO_MONO_SUMMARY_WAITING_EARS;
+        }
+        String ear = autoMonoSingleEarLabel(status);
+        String reason = Strings.autoMonoReason(status.reason);
+        return ear.isEmpty() ? reason : ear + " · " + reason;
+    }
+
+    private static String autoMonoSingleEarLabel(AutoMonoHostClient.Status status) {
+        if ((status.knownMask & 3) != 3) return "";
+        int worn = status.inEarMask & 3;
+        if (worn == 1) return Strings.AUTO_MONO_SUMMARY_LEFT_ONLY;
+        if (worn == 2) return Strings.AUTO_MONO_SUMMARY_RIGHT_ONLY;
+        return "";
     }
 
     /**
@@ -3053,15 +3241,20 @@ public final class CodecController {
         }
     }
 
-    private static void setBlockDisabled(Subscription sub, boolean disabled) {
+    private void setBlockDisabled(Subscription sub, boolean disabled) {
         if (!isSubscriptionActive(sub) || sub.prefs == null) return;
-        PrefRef.setDisabled(sub.prefs.category, disabled);
-        PrefRef.setDisabled(sub.prefs.codecDisplay, disabled);
+        // A disabled parent would also lock the independent mono row during codec discovery,
+        // LE Audio transitions or an unsupported HiRes codec. Disable the original rows only.
+        PrefRef.setDisabled(sub.prefs.category, disabled && sub.prefs.autoMonoToggle == null);
+        if (sub.prefs.codecDisplay != sub.prefs.category || sub.prefs.autoMonoToggle == null) {
+            PrefRef.setDisabled(sub.prefs.codecDisplay, disabled);
+        }
         PrefRef.setDisabled(sub.prefs.codecModeOption, disabled);
         PrefRef.setDisabled(sub.prefs.qualityOption, disabled);
         PrefRef.setDisabled(sub.prefs.sampleRateOption, disabled);
         PrefRef.setDisabled(sub.prefs.rememberToggle, disabled);
         PrefRef.setDisabled(sub.prefs.leAudioSwitch, disabled);
+        applyAutoMonoToSwitch(sub);
     }
 
     private void renderCodecMode(CodecSnapshot snapshot, Subscription sub) {
@@ -3466,6 +3659,7 @@ public final class CodecController {
         BroadcastReceiver receiver;
         Boolean connected;
         boolean renderedLeAudioActive;
+        boolean autoMonoRendering;
         java.lang.ref.WeakReference<Activity> hostActivity;
         volatile boolean active = true;
         private long refreshGeneration;
@@ -3485,6 +3679,7 @@ public final class CodecController {
                     String action = intent.getAction();
                     if (ACTION_CONNECTION_STATE_CHANGED.equals(action)) {
                         if (!matchesSubscriptionDevice(intent)) return;
+                        if (deviceKey(mac) != null) autoMonoClient.query(mac);
                         int state = intent.getIntExtra(EXTRA_CONNECTION_STATE, -1);
                         if (state != -1 && state != BluetoothProfile.STATE_CONNECTED) {
                             mainHandler.post(() -> {

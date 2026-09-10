@@ -6,6 +6,8 @@ option(MELODY_FIXED_1000_AB "Keep quality-priority fixed at 1000 kbps for A/B ev
 option(MELODY_DYN_OBSERVE "Observe-only dynamic adapter probe for future ROM-family research" OFF)
 
 add_library(melody_lhdc_patch SHARED native_lhdc_patch.cpp)
+add_library(melody_pcm_mono SHARED native_pcm_mono.cpp)
+target_compile_features(melody_pcm_mono PRIVATE cxx_std_17)
 
 if(MELODY_FIXED_1000_AB)
     target_compile_definitions(melody_lhdc_patch PRIVATE MELODY_FIXED_1000_AB=1)
@@ -16,11 +18,14 @@ if(MELODY_DYN_OBSERVE)
 endif()
 
 target_compile_options(melody_lhdc_patch PRIVATE -Wall -Wextra -Werror)
+target_compile_options(melody_pcm_mono PRIVATE -Wall -Wextra -Werror -fno-fast-math)
 
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     target_compile_options(melody_lhdc_patch PRIVATE -mbranch-protection=standard)
+    target_compile_options(melody_pcm_mono PRIVATE -mbranch-protection=standard)
 endif()
 
 find_library(log-lib log)
 find_library(dl-lib dl)
 target_link_libraries(melody_lhdc_patch ${log-lib} ${dl-lib})
+target_link_libraries(melody_pcm_mono ${log-lib} ${dl-lib})

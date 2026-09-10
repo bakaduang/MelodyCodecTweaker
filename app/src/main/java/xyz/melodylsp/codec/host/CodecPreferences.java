@@ -18,6 +18,8 @@ public final class CodecPreferences {
     public final Object rememberToggle;
     /** Optional LE Audio toggle (DetailMain only). Null on surfaces that omit it. */
     public final Object leAudioSwitch;
+    /** Independent per-device single-ear setting, available on both injected surfaces. */
+    public final Object autoMonoToggle;
 
     public CodecPreferences(
             Context uiContext,
@@ -40,6 +42,20 @@ public final class CodecPreferences {
             Object sampleRateOption,
             Object rememberToggle,
             Object leAudioSwitch) {
+        this(uiContext, category, codecDisplay, codecModeOption, qualityOption, sampleRateOption,
+                rememberToggle, leAudioSwitch, null);
+    }
+
+    public CodecPreferences(
+            Context uiContext,
+            Object category,
+            Object codecDisplay,
+            Object codecModeOption,
+            Object qualityOption,
+            Object sampleRateOption,
+            Object rememberToggle,
+            Object leAudioSwitch,
+            Object autoMonoToggle) {
         this.uiContext = uiContext;
         this.category = category;
         this.codecDisplay = codecDisplay;
@@ -48,5 +64,6 @@ public final class CodecPreferences {
         this.sampleRateOption = sampleRateOption;
         this.rememberToggle = rememberToggle;
         this.leAudioSwitch = leAudioSwitch;
+        this.autoMonoToggle = autoMonoToggle;
     }
 }

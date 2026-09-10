@@ -66,6 +66,8 @@ public final class MelodyCodecLspEntry extends XposedModule {
             installWirelessSettingsScope(param);
         } else if (SETTINGS_PKG.equals(pkg)) {
             installSettingsScope(param);
+        } else if (xyz.melodylsp.codec.mono.PcmPlayerHookInstaller.supportsPackage(pkg)) {
+            xyz.melodylsp.codec.mono.PcmPlayerHookInstaller.install(this);
         }
     }
 
@@ -80,6 +82,7 @@ public final class MelodyCodecLspEntry extends XposedModule {
     }
 
     private void installSystemScope(PackageLoadedParam param) {
+        xyz.melodylsp.codec.mono.AutoMonoSystemBridge.install(this);
         if (!moduleEnabled()) {
             log(Log.INFO, MLog.TAG, "module disabled by master switch; skipping system hooks");
             return;

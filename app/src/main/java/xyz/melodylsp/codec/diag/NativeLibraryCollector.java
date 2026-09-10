@@ -13,7 +13,8 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Copies the two ColorOS-fixed vendor LHDC libraries into the feedback ZIP.
+ * Copies the two ColorOS-fixed vendor LHDC libraries into the feedback ZIP. Also includes
+ * the system AudioTrack library when directly readable, for exact PCM-hook ABI diagnosis.
  *
  * <p>Only ColorOS is targeted and both libraries live at fixed read-only system paths, so the
  * collector is intentionally a plain root copy plus a cheap local sanity check (non-empty,
@@ -24,6 +25,7 @@ public final class NativeLibraryCollector {
 
     public static final String LIB_BLUETOOTH_JNI = "libbluetooth_jni.so";
     public static final String LIB_LHDC_ENC = "liblhdcv5BT_enc.so";
+    public static final String LIB_AUDIO_CLIENT = "libaudioclient.so";
 
     private static final String PATH_BLUETOOTH_JNI = "/system/lib64/" + LIB_BLUETOOTH_JNI;
     private static final String PATH_LHDC_ENC = "/system/lib64/" + LIB_LHDC_ENC;
@@ -79,8 +81,31 @@ public final class NativeLibraryCollector {
                 deleteQuietly(lib.tempFile);
             }
             result.libraries.clear();
+        } else {
+            collectAudioClientIfReadable(cacheDir, result);
         }
         return result;
+    }
+
+    /** Optional, unprivileged and bounded: inability to read this file never blocks feedback. */
+    private static void collectAudioClientIfReadable(File cacheDir, CollectionResult result) {
+        File source = new File("/system/lib64/" + LIB_AUDIO_CLIENT);
+        File temp = new File(cacheDir, "native-" + LIB_AUDIO_CLIENT + ".tmp");
+        try {
+            if (!source.isFile() || !source.canRead() || source.length() < 64
+                    || source.length() > MAX_SINGLE_BYTES) return;
+            byte[] bytes = readAll(source);
+            if (bytes.length > MAX_SINGLE_BYTES || !isElf64Aarch64(bytes)) return;
+            try (java.io.FileOutputStream out = new java.io.FileOutputStream(temp)) {
+                out.write(bytes);
+            }
+            result.libraries.put(LIB_AUDIO_CLIENT, new CollectedLibrary(
+                    LIB_AUDIO_CLIENT, source.getPath(), temp, bytes.length, sha256(bytes)));
+        } catch (Throwable ignored) {
+            // This optional public system file can be inaccessible on another ROM.
+        } finally {
+            if (!result.libraries.containsKey(LIB_AUDIO_CLIENT)) deleteQuietly(temp);
+        }
     }
 
     private static void collectOne(

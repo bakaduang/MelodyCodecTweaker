@@ -14,9 +14,18 @@
   <a href="https://github.com/Xposed-Modules-Repo/xyz.melodylsp.codec">Xposed Modules Repo</a>
 </p>
 
-`MelodyCodecTweaker` is an LSPosed module designed for the OPPO / OnePlus "Wireless Headphones" app. It does not replace system files nor modify the app's APK. Instead, it injects audio quality controls at runtime, allowing codec, playback quality, sample rate, and LE Audio status—originally buried in the system Bluetooth stack—to be directly managed from the headset control panel.
+`MelodyCodecTweaker` is an LSPosed module for the OPPO / OnePlus "Wireless Headphones" app. It adds codec, playback quality, sample rate, and LE Audio controls to the official headset panel. It also provides **automatic single-ear channel merging**: music's left and right channels are mixed when one earbud is worn, and original stereo playback resumes when both earbuds are worn.
 
 The module primarily targets `com.oplus.melody` on ColorOS / OPlus devices, working alongside the `com.android.bluetooth` and `com.oplus.wirelesssettings` scopes for more stable state reading and writing.
+
+## 2.5.0-preview.7: Automatic single-ear channel merging
+
+- Adds a toggle to the main headset and OneSpace panels, off by default and saved per headset, with confirmation when enabling or disabling it.
+- Uses left/right wearing reports to merge audio as an adapted player submits it; wearing both earbuds restores stereo playback.
+- Currently targets QQ Music and NetEase Cloud Music on Android 16 / arm64. Add the player you use to the LSPosed scope.
+- Includes native loading and audio entry-point adaptation. preview.7 fixes argument forwarding during track destruction on song changes and adds fatal crash logs to diagnostic capture.
+
+See [Automatic single-ear channel merging](#automatic-single-ear-channel-merging) below for setup, implementation, and device validation status.
 
 ## 2.3.0 Update Highlights
 
@@ -65,16 +74,17 @@ If this module has been helpful to you, feel free to scan the QR code to buy me 
 - Playback quality and sample rate settings are cross-validated to avoid writing combinations rejected by the Bluetooth stack.
 - Supports per-headset memory of selections, automatically applying the last settings upon reconnection.
 - Supports an LE Audio toggle: enabling it switches to LC3 and hides playback quality and sample rate options under classic A2DP; disabling it restores classic Bluetooth audio state.
+- Supports [automatic single-ear channel merging](#automatic-single-ear-channel-merging) in adapted players, so either earbud can receive content from both original channels, with stereo restored when both are worn.
 - Options are hidden or grayed out when the headset is disconnected, the current protocol is uncontrollable, or the headset lacks Hi-Res/LE Audio support, closely mimicking official UI behavior.
 - Provides a built-in diagnostics page to view scope loading, page hooks, Bluetooth bridging, wireless settings bridging, native patches, memory replay status, etc., with an option to hide the desktop icon on demand.
 - Provides a "Start Recording Issue + Generate Feedback Package" reproduction workflow to help troubleshoot variations across devices, OS versions, headset models, and app versions.
 
 ## Requirements
 
-- Android 12 or later.
+- Android 12 or later for the base features. Single-ear channel merging requires Android 16 / arm64 and a player running in a 64-bit process.
 - A framework supporting libxposed API 101, such as the latest LSPosed.
 - The "Wireless Headphones" app on OPPO / OnePlus / ColorOS systems: `com.oplus.melody`.
-- It is recommended to enable all four LSPosed scopes:
+- It is recommended to enable these four base LSPosed scopes:
   - `com.oplus.melody`
   - `com.android.bluetooth`
   - `com.oplus.wirelesssettings`
@@ -82,17 +92,70 @@ If this module has been helpful to you, feel free to scan the QR code to buy me 
 
 `com.oplus.melody` handles page injection and user interaction, `com.android.bluetooth` ensures more stable reading/writing of A2DP codec states, `com.oplus.wirelesssettings` invokes system-side LE Audio capabilities, and `com.android.settings` is used solely to suppress harmless log noise from LHDC V5 extended values in Developer Options. Omitting scopes may still allow partial functionality, but real-time switching, state feedback, LE Audio, and system settings log suppression are more likely to fail.
 
+For single-ear channel merging, also select the player you use: QQ Music (`com.tencent.qqmusic`) or NetEase Cloud Music (`com.netease.cloudmusic`). If you use only one, adding that player is sufficient.
+
 ## Installation & Activation
 
 1. Install the module APK.
 2. Enable the module in LSPosed.
-3. Check the four scopes listed above.
-4. Force stop the "Wireless Headphones" app, Bluetooth-related processes, and Wireless Settings, or simply reboot the device.
+3. Check the four base scopes above, plus the relevant player for single-ear channel merging.
+4. Restart the relevant processes or reboot. When first enabling or upgrading single-ear support, a reboot is recommended so both the player and Bluetooth service load the new module.
 5. Open the "Wireless Headphones" app and navigate to the headset main panel or OneSpace panel to view the injected controls.
 
 To temporarily disable the module, open the desktop icon "OPlus Headset Audio Helper" and turn off the main switch. The host page will fully revert to its original state only after restarting the "Wireless Headphones" app process.
 
 The desktop icon is visible by default. To hide it from the launcher, enable "Hide Desktop Icon" in the diagnostics page; this only controls the launcher alias, does not disable the module, and does not affect LSPosed scope loading or the module entry in the LSPosed manager.
+
+## Automatic single-ear channel merging
+
+Stereo music can place instruments, backing vocals, or effects in different channels. Wearing only the left or right earbud can leave content on the other side unheard. This feature follows the earbuds' actual wearing state and combines both channels for listening with either earbud.
+
+**How to enable it**
+
+1. Follow the installation steps above, enable the module for your player, and reboot.
+2. Connect the earbuds and keep their official wearing detection enabled.
+3. Open the main "Wireless Headphones" or OneSpace panel, enable the single-ear merge toggle (「单耳自动合并声道」), and confirm.
+4. Play music in QQ Music or NetEase Cloud Music, then check the toggle summary and the player channel-merging row in module diagnostics.
+
+The toggle is off by default, saved per headset, and independent of "Remember this headset." Both enabling and disabling require confirmation; canceling leaves the current setting intact.
+
+**When channels are merged**
+
+Both earbuds' states must be known from the current connection, and the headset must be confirmed as the current media output. The other earbud can be outside its case, provided it is explicitly reported as not worn.
+
+| Detected state | Behavior |
+| --- | --- |
+| Only the left earbud is worn; the right is known not to be worn | Merge both channels for listening with the left earbud |
+| Only the right earbud is worn; the left is known not to be worn | Merge both channels for listening with the right earbud |
+| Both earbuds are worn | Stop merging and restore original stereo |
+| Neither earbud is worn | Stop merging |
+| Either side is unknown or reports conflict | Wait for reliable information; a missing report is not treated as "not worn" |
+| Disconnection, output change, a call, or expired control messages are detected | Stop merging |
+
+Wearing changes use a short debounce. Turning the feature off also stops merging. An enabled toggle permits automatic processing; **the "channels merged" status requires actual audio frames to have been processed in the current session**.
+
+**How the audio is processed**
+
+The module works on decoded PCM as the player submits it for playback. It averages each stereo sample pair and writes the same result to both output channels:
+
+```text
+M = (L + R) / 2
+output left  = M
+output right = M
+```
+
+Either earbud then receives the same combined content. Averaging avoids the output overflow that adding two full-level channels could cause. Stereo positioning is combined while this mode is active, and the loudness of content present on only one side can change.
+
+Processing inside the player also covers adapted DIRECT PCM outputs, which can bypass the system's regular mixer and its mono-audio setting. The mixed PCM continues through the existing output path; the player and system still manage the sample rate, Bluetooth codec, and encoding parameters. Wearing changes enable or disable this PCM processing.
+
+**Compatibility and validation**
+
+- The current implementation targets media tracks in QQ Music and NetEase Cloud Music on Android 16 / arm64, with matching native system audio entry points. The module's general Android 12+ requirement does not extend to this feature.
+- It processes streaming stereo PCM. Directly submitted compressed bitstreams, static shared buffers, non-stereo tracks, and unknown formats are skipped. A song being an MP3, AAC, or FLAC file does not itself determine compatibility; the player's actual output path does.
+- Routing checks depend on information from the system and audio tracks. Multiple outputs, system routing per app, and different LE Audio configurations still require individual validation.
+- Successful single-ear merging has been reported with **Find X9 Ultra / ColorOS 16.0.10.501 + Enco X3 in QQ Music**. NetEase Cloud Music and other device combinations still need device testing. The preview.7 song-switch fix has passed local regression checks; device retesting of consecutive song changes is pending.
+
+If the status reports a missing player or unavailable audio entry point, check the player scope and reboot. To report a problem, start recording, reproduce single-ear playback or song switching, and generate a feedback package. Include the player, phone/OS, earbud model, and which side was worn. See the [PCM implementation notes (Chinese)](docs/player-pcm-preview4.md) and [preview.7 fix and validation notes (Chinese)](docs/player-pcm-preview7.md) for details.
 
 ## Built-in Diagnostics Page
 
@@ -100,7 +163,7 @@ The desktop entry opens the built-in diagnostics page. The v3 layout uses a four
 navigation (Overview / Status / Link / Feedback) with Android gesture-immersion support:
 
 - **Overview**: module activation status, module master switch, hide-desktop-icon toggle, environment info (with hook ✓/✗ marks for the three host scopes), key-status snapshot, and memory info (current Melody memory + the most recent replay chain).
-- **Status**: 22 diagnostic states (scopes / page hooks / injection / A2DP and LE Audio bridges / native patches / writes / memory / replay, etc.) with a manual refresh button that re-queries patch state on demand.
+- **Status**: scopes, page hooks, A2DP and LE Audio bridges, earbud wearing detection, single-ear merging, player audio processing, native patches, and memory replay, with a manual refresh button that re-queries patch state on demand.
 - **Link**: the experimental bitrate congestion governor switch, live LHDC BQR environment (KPIs + boundary states + event reasons), and the BQR history window.
 - **Feedback**: recording session, feedback package generation, and the recent structured event timeline.
 
@@ -132,8 +195,8 @@ If the system denies direct root directory access, it falls back to:
 
 Follow this workflow before submitting feedback; regular users can proceed in order:
 
-1. Confirm the module is enabled in LSPosed with `com.oplus.melody`, `com.android.bluetooth`, `com.oplus.wirelesssettings`, and `com.android.settings` scopes checked.
-2. Grant root access to "OPlus Headset Audio Helper" in your root manager (KernelSU / Magisk / APatch); feedback packages can still be generated without root, but will lack the critical Bluetooth stack logs.
+1. Confirm the module is enabled in LSPosed with the four base scopes checked. For single-ear merging issues, also check the player scope.
+2. Grant root access to "OPlus Headset Audio Helper" in your root manager (KernelSU / Magisk / APatch). The current feedback workflow requires an active recording session with root access to collect Bluetooth logs and system library evidence.
 3. Open the "OPlus Headset Audio Helper" diagnostics page and click "Start Recording Issue". If a root permission prompt appears, allow it.
 4. Return to the "Wireless Headphones" page and reproduce the issue once (e.g., switching LHDC quality / sample rate, switching AAC / SBC / LHDC, disconnecting/reconnecting the headset, toggling LE Audio, or waiting for "Not Adapted, Please Contact Developer" / "Not Fully Adapted — Severe Stutter May Occur").
 5. Return to the diagnostics page and click "Generate Feedback Package".
@@ -145,7 +208,7 @@ For LHDC V5 native memory patch compatibility, please also provide the device mo
 adb pull /system/lib64/libbluetooth_jni.so
 ```
 
-The feedback package includes device info, module version, related app versions, diagnostic status, recent module event timeline, structured event JSONL, state snapshots, module preferences, `scope.list`, `module.prop`, and module logcat. The module's own logs uniformly anonymize Bluetooth MAC addresses. If root is granted, it will additionally attempt to capture and filter Bluetooth stack-related logcat entries to verify `quality_mode`, `target bit rate`, `codec_specific_1`, native patch status, and memory replay. It does not actively package user files; vendor Bluetooth stack outputs are outside module control, and root logcat may still contain system information—please verify privacy concerns before submitting.
+The feedback package includes device info, module version, related app versions, diagnostic status, recent module event timeline, structured event JSONL, state snapshots, module preferences, `scope.list`, `module.prop`, and module logcat. The module's own logs uniformly anonymize Bluetooth MAC addresses. The current workflow also uses root to capture and filter Bluetooth stack-related logcat entries to verify `quality_mode`, `target bit rate`, `codec_specific_1`, native patch status, and memory replay. It does not actively package user files; vendor Bluetooth stack outputs are outside module control, and root logcat may still contain system information—please verify privacy concerns before submitting.
 
 Common files include:
 
@@ -156,7 +219,9 @@ Common files include:
 - `state.json`: Current diagnostic state snapshot.
 - `prefs.txt`: Module preferences and diagnostic preferences.
 - `logcat-module.txt`: Module-related logcat.
-- `logcat-bluetooth-root.txt`: Bluetooth stack logs captured when root is available.
+- `logcat-bluetooth-root.txt`: Bluetooth stack, player PCM hooks, audio services, and crash-related logs.
+- `audio-state.txt`: AudioPolicy / AudioFlinger snapshots for inspecting the player's output path.
+- `native/libaudioclient.so`: The system audio library, when readable, for checking native entry points; its source, size, and hash are listed in `native/manifest.txt`.
 
 ## LE Audio Notes
 

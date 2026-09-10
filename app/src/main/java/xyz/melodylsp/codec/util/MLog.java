@@ -305,6 +305,10 @@ public final class MLog {
             case "lhdc.governor.queue_hooks":
             case "lhdc.link.bqr_hooks":
             case "remember.set":
+            case "mono.hook":
+            case "mono.bridge":
+            case "mono.state":
+            case "mono.pcm.backend":
                 return true;
             default:
                 return false;
@@ -405,6 +409,11 @@ public final class MLog {
     static boolean isStickyDiagnosticEvent(String name) {
         if (name == null || name.isEmpty()) return false;
         return name.startsWith("scope.")
+                || "mono.hook".equals(name)
+                || "mono.bridge".equals(name)
+                || "mono.state".equals(name)
+                || "mono.audio.write".equals(name)
+                || "mono.pcm.backend".equals(name)
                 || name.startsWith("dexkit.")
                 || name.endsWith(".hooked")
                 || name.endsWith(".injected")

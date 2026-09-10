@@ -11,3 +11,14 @@ gradle-app.setting
 *.keystore
 *.jks
 *.bak
+
+# Android packages are distributed as release assets, not source files.
+*.apk
+*.apk.idsig
+*.aab
+
+# Local device feedback and extracted applications/system libraries.
+/lib64提取
+/lib64提取.zip
+/反馈zip包
+/提取apk

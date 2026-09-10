@@ -5,7 +5,7 @@ import android.content.Context;
 import xyz.melodylsp.codec.util.MLog;
 
 /**
- * Builds the codec block (Quality / SampleRate / Remember Toggle) using only host classpath
+ * Builds the codec block and per-device audio switches using only host classpath
  * types. <strong>No ListPreference is used</strong>: the host APK is R8-minified and R8
  * stripped {@code ListPreference.setEntries / setEntryValues} entirely (they are unused in
  * the host's own code), so the moment the user taps a {@code ListPreference} the dialog
@@ -14,9 +14,9 @@ import xyz.melodylsp.codec.util.MLog;
  * plain {@code Preference} rows whose click handler pops a hand-rolled {@code PopupWindow}
  * (see {@link CodecController}). Same UX, none of the R8 fallout.
  *
- * <p>OneSpace skips the remember toggle — that surface is for instant switching, persistence
- * belongs in DetailMain. Both surfaces can use a Category wrapper when the host list needs
- * COUI to own the card background.</p>
+ * <p>OneSpace skips the codec remember toggle. The automatic mono setting is independent of
+ * codec memory and is available on both surfaces. Both surfaces can use a Category wrapper
+ * when the host list needs COUI to own the card background.</p>
  */
 public final class CodecBlockBuilder {
 
@@ -166,6 +166,21 @@ public final class CodecBlockBuilder {
             }
         }
 
+        Object autoMono = newOf(context, COUI_SWITCH_PREFERENCE, ANDX_SWITCH_PREFERENCE_COMPAT);
+        if (autoMono != null) {
+            cloneVisualStyleFrom(autoMono, switchTemplate);
+            PrefRef.setKey(autoMono, "melody_codec_lsp_auto_mono");
+            PrefRef.setTitle(autoMono, Strings.AUTO_MONO_TITLE);
+            PrefRef.setSummary(autoMono, Strings.AUTO_MONO_SUMMARY_LOADING
+                    + "\n" + Strings.AUTO_MONO_EXPERIMENTAL_NOTE);
+            PrefRef.setIconSpaceReserved(autoMono, false);
+            // The Bluetooth owner stores this per MAC; never use the host's default prefs.
+            PrefRef.setPersistent(autoMono, false);
+            PrefRef.setChecked(autoMono, false);
+            PrefRef.setOrder(autoMono, firstChildOrder + 3);
+            PrefRef.addPreference(insertionParent, autoMono);
+        }
+
         Object leAudio = null;
         if (includeLeAudio) {
             leAudio = newOf(context, COUI_SWITCH_PREFERENCE, ANDX_SWITCH_PREFERENCE_COMPAT);
@@ -179,7 +194,7 @@ public final class CodecBlockBuilder {
                 // Hidden until the wirelesssettings bridge confirms the device supports LE
                 // Audio (TODO B1 device-support probe); CodecController flips it visible.
                 PrefRef.setVisible(leAudio, false);
-                PrefRef.setOrder(leAudio, firstChildOrder + 3);
+                PrefRef.setOrder(leAudio, firstChildOrder + 4);
                 PrefRef.addPreference(insertionParent, leAudio);
             }
         }
@@ -196,9 +211,11 @@ public final class CodecBlockBuilder {
         else codecDisplay = remember;
 
         MLog.event("codec_block.inserted", "order", order,
-                "wrapped", wrapInCategory, "remember", includeRemember, "leAudio", includeLeAudio);
+                "wrapped", wrapInCategory, "remember", includeRemember, "leAudio", includeLeAudio,
+                "autoMono", autoMono != null);
         return new CodecPreferences(
-                context, category, codecDisplay, codecMode, quality, sampleRate, remember, leAudio);
+                context, category, codecDisplay, codecMode, quality, sampleRate, remember, leAudio,
+                autoMono);
     }
 
     /** Backwards-compatible overload: wrap in category, include remember toggle. */

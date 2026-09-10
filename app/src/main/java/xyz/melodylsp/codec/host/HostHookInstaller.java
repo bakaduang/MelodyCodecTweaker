@@ -119,6 +119,7 @@ public final class HostHookInstaller {
     private final Map<String, Set<Integer>> pendingGameModeTypes = new HashMap<>();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private CodecController controller;
+    private xyz.melodylsp.codec.mono.WearStateHookInstaller wearStateHooks;
     private boolean activityScanRegistered;
 
     public HostHookInstaller(
@@ -143,6 +144,8 @@ public final class HostHookInstaller {
 
     public void install() {
         try {
+            wearStateHooks = new xyz.melodylsp.codec.mono.WearStateHookInstaller(module, classLoader);
+            wearStateHooks.install();
             hookApplicationOnCreate();
             hookHighAudio();
             hookBasePreferenceFragment();
@@ -176,6 +179,7 @@ public final class HostHookInstaller {
         if (controller != null) return;
         MLog.setDiagnosticContext(app, "melody");
         MLog.event("scope.host.context.ready");
+        if (wearStateHooks != null) wearStateHooks.attach(app);
 
         String hostVersion = "?";
         try {

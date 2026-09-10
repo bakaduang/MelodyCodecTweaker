@@ -8,6 +8,7 @@ import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.os.SystemClock;
 import android.provider.MediaStore;
 
 import java.io.BufferedReader;
@@ -38,7 +39,9 @@ public final class FeedbackCollector {
             BuildConfig.APPLICATION_ID,
             "com.oplus.melody",
             "com.android.bluetooth",
-            "com.oplus.wirelesssettings"
+            "com.oplus.wirelesssettings",
+            "com.tencent.qqmusic",
+            "com.netease.cloudmusic"
     };
 
     private static final String[] STATUS_KEYS = {
@@ -53,6 +56,10 @@ public final class FeedbackCollector {
             "scope.wirelesssettings",
             "bridge.le.ws",
             "dexkit",
+            "mono.hook",
+            "mono.bridge",
+            "mono.state",
+            "mono.pcm.backend",
             "native.patch.bitrate",
             "native.patch.fast_switch",
             "diag.root.capture",
@@ -72,6 +79,7 @@ public final class FeedbackCollector {
     private static final String[] BLUETOOTH_LOG_PATTERNS = {
             "MelodyCodecLsp",
             "MelodyLhdcGov",
+            "MelodyPcmMono",
             "BluetoothQualityReportNativeInterface",
             "BluetoothQualityReportJni",
             "BqrCommon",
@@ -81,6 +89,13 @@ public final class FeedbackCollector {
             "soc_bta_av",
             "a2dp_vendor_lhdcv5",
             "a2dp_vendor_lhdcv5_encoder",
+            "AudioSystem",
+            "AudioFlinger",
+            "AudioPolicy",
+            "AudioService",
+            "AudioTrack",
+            "BTAudioSessionAidl",
+            "btaudio_offload_aidl",
             "dexkit",
             "OplusA2dpStateMachineExtImpl",
             "setCodecConfigPreference",
@@ -134,7 +149,8 @@ public final class FeedbackCollector {
                     + "BluetoothQualityReportNativeInterface:V "
                     + "BluetoothQualityReportJni:V "
                     + "bluetooth-a2dp:V soc_bta_av:V "
-                    + "a2dp_vendor_lhdcv5:V a2dp_vendor_lhdcv5_encoder:V '*:S'";
+                    + "a2dp_vendor_lhdcv5:V a2dp_vendor_lhdcv5_encoder:V "
+                    + RootBluetoothLogCapture.AUDIO_LOGCAT_FILTERS + "'*:S'";
     private static final int MAX_COMMAND_OUTPUT_CHARS = 4_000_000;
 
     private FeedbackCollector() {
@@ -154,6 +170,7 @@ public final class FeedbackCollector {
             throw new IllegalStateException(
                     "当前没有有效的 root 记录会话，请先在 Root 管理器授权并重新开始记录");
         }
+        String audioState = collectAudioState();
         // Collect vendor libraries BEFORE stopping the root logcat so the LHDC encoder stays
         // mapped and playing while the two .so files are located and read.
         NativeLibraryCollector.CollectionResult nativeResult =
@@ -173,6 +190,7 @@ public final class FeedbackCollector {
             write(zip, "timeline.txt", diag.getString(DiagnosticEvents.KEY_EVENTS, ""));
             write(zip, "events.jsonl", diag.getString(DiagnosticEvents.KEY_EVENTS_JSON, ""));
             write(zip, "state.json", buildStateJson(context, diag));
+            write(zip, "audio-state.txt", audioState);
             write(zip, "memory.txt", buildMemoryReport(diag));
             write(zip, "prefs.txt", buildPrefsDump(context, diag));
 
@@ -224,7 +242,7 @@ public final class FeedbackCollector {
                 || "stopped".equals(status);
     }
 
-    private static void writeNativeLibraries(
+    static void writeNativeLibraries(
             ZipOutputStream zip,
             NativeLibraryCollector.CollectionResult result) throws Exception {
         StringBuilder manifest = new StringBuilder();
@@ -234,7 +252,8 @@ public final class FeedbackCollector {
         manifest.append("fingerprint=").append(Build.FINGERPRINT).append('\n');
         for (String basename : new String[]{
                 NativeLibraryCollector.LIB_BLUETOOTH_JNI,
-                NativeLibraryCollector.LIB_LHDC_ENC}) {
+                NativeLibraryCollector.LIB_LHDC_ENC,
+                NativeLibraryCollector.LIB_AUDIO_CLIENT}) {
             NativeLibraryCollector.CollectedLibrary lib = result.libraries.get(basename);
             if (lib == null) {
                 manifest.append(basename).append("=missing\n");
@@ -481,6 +500,33 @@ public final class FeedbackCollector {
         return mergeUniqueLogLines(taggedFiltered, allFiltered);
     }
 
+    /** Read-only snapshots; never changes mono, offload properties, routes, or playback. */
+    private static String collectAudioState() {
+        long deadline = SystemClock.elapsedRealtime() + 15_000L;
+        StringBuilder result = new StringBuilder("Audio state at feedback generation\n");
+        result.append("Captured: ").append(new Date()).append('\n');
+        result.append("This contains settings and service state, not audio samples.\n");
+        appendAudioState(result, deadline, "Saved master_mono (current user)",
+                "/system/bin/settings --user current get system master_mono");
+        appendAudioState(result, deadline, "A2DP offload supported property",
+                "/system/bin/getprop ro.bluetooth.a2dp_offload.supported");
+        appendAudioState(result, deadline, "A2DP offload disabled property",
+                "/system/bin/getprop persist.bluetooth.a2dp_offload.disabled");
+        appendAudioState(result, deadline, "Audio policy (routes, output flags, master mono)",
+                "/system/bin/dumpsys -t 3 media.audio_policy");
+        appendAudioState(result, deadline, "AudioFlinger (output threads, mixer and tracks)",
+                "/system/bin/dumpsys -t 3 media.audio_flinger");
+        result.append("\nCompleted: ").append(new Date()).append('\n');
+        return result.toString().replaceAll(
+                "(?i)([0-9a-f]{2}):(?:[0-9a-f]{2}:){4}([0-9a-f]{2})", "$1:**:**:**:**:$2");
+    }
+
+    private static void appendAudioState(
+            StringBuilder result, long deadline, String label, String command) {
+        result.append('\n').append(label).append(" at ").append(new Date()).append('\n');
+        result.append(runRootCommand(command, 6_000L, deadline)).append('\n');
+    }
+
     static String mergeUniqueLogLines(String first, String second) {
         Set<String> lines = new LinkedHashSet<>();
         addLogLines(lines, first);
@@ -529,21 +575,31 @@ public final class FeedbackCollector {
     }
 
     private static String runRootCommand(String command, long timeoutMs) {
+        return runRootCommand(command, timeoutMs, Long.MAX_VALUE);
+    }
+
+    private static String runRootCommand(String command, long timeoutMs, long deadline) {
         StringBuilder failures = new StringBuilder();
         for (String su : SU_CANDIDATES) {
-            String result = runCommand(new String[]{su, "-c", command}, timeoutMs);
+            if (remainingTimeMs(deadline) == 0L) {
+                return "root command failed: audio snapshot time budget exhausted\n" + failures;
+            }
+            String result = runCommand(new String[]{su, "-c", command}, timeoutMs, deadline);
             if (!looksLikeRootCommandFailure(result)) {
                 return result;
             }
             failures.append("$ ").append(su).append(" -c ").append(command).append('\n')
                     .append(result).append('\n');
         }
+        if (remainingTimeMs(deadline) == 0L) {
+            return "root command failed: audio snapshot time budget exhausted\n" + failures;
+        }
         String shellResult = runCommand(new String[]{
                 "/system/bin/sh",
                 "-c",
                 "PATH=/data/adb/ksu/bin:/data/adb/magisk:/system/bin:/system/xbin:/vendor/bin:/sbin:$PATH su -c \""
                         + shellEscape(command) + "\""
-        }, timeoutMs);
+        }, timeoutMs, deadline);
         if (!looksLikeRootCommandFailure(shellResult)) {
             return shellResult;
         }
@@ -655,6 +711,15 @@ public final class FeedbackCollector {
     }
 
     private static String runCommand(String[] command, long timeoutMs) {
+        return runCommand(command, timeoutMs, Long.MAX_VALUE);
+    }
+
+    private static long remainingTimeMs(long deadline) {
+        return deadline == Long.MAX_VALUE ? Long.MAX_VALUE
+                : Math.max(0L, deadline - SystemClock.elapsedRealtime());
+    }
+
+    private static String runCommand(String[] command, long timeoutMs, long deadline) {
         Process process = null;
         StreamCollector out = null;
         StreamCollector err = null;
@@ -664,12 +729,15 @@ public final class FeedbackCollector {
             err = new StreamCollector(process.getErrorStream());
             out.start();
             err.start();
-            boolean finished = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
+            boolean finished = process.waitFor(
+                    Math.min(timeoutMs, remainingTimeMs(deadline)), TimeUnit.MILLISECONDS);
             if (!finished) {
                 process.destroy();
             }
-            out.join(1000);
-            err.join(1000);
+            long outWait = Math.min(1_000L, remainingTimeMs(deadline));
+            if (outWait > 0L) out.join(outWait);
+            long errWait = Math.min(1_000L, remainingTimeMs(deadline));
+            if (errWait > 0L) err.join(errWait);
             String stdout = out.text();
             String stderr = err.text();
             String suffix = stderr.isEmpty() ? "" : "\n--- stderr ---\n" + stderr;

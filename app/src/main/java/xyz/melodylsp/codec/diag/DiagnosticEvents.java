@@ -520,6 +520,22 @@ public final class DiagnosticEvents {
             mark(editor, "bridge.le.ws", "registered", message, time);
         }
         String event = eventName(message);
+        if ("mono.hook".equals(event)) {
+            mark(editor, "mono.hook", message.contains("ok=true") ? "hooked" : "attention", message, time);
+        } else if ("mono.bridge".equals(event)) {
+            mark(editor, "mono.bridge", message.contains("ok=true") ? "registered" : "attention", message, time);
+        } else if ("mono.state".equals(event)) {
+            String mode = valueOf(message, "mode");
+            String state = "unavailable".equals(mode) || "restoring".equals(mode)
+                    ? "attention" : "mono".equals(mode) || "system_mono".equals(mode) ? "active"
+                    : "off".equals(mode) || "stereo".equals(mode) ? "ready" : "waiting";
+            mark(editor, "mono.state", state, message, time);
+        } else if ("mono.pcm.backend".equals(event)) {
+            String mode = valueOf(message, "mode");
+            mark(editor, "mono.pcm.backend", "mono".equals(mode) ? "active"
+                    : "unavailable".equals(mode) ? "attention"
+                    : "off".equals(mode) ? "ready" : "waiting", message, time);
+        }
         if ("lhdc.memory_patch".equals(event)) {
             mark(editor, "native.patch.bitrate", stateFromMessage(message), message, time);
         } else if ("lhdc.memory_patch.fast_switch".equals(event)) {
