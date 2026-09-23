@@ -53,11 +53,14 @@ constexpr const char* kDeviceUpdateSymbol =
 constexpr const char* kDestructorSymbols[] = {
         "_ZN7android10AudioTrackD0Ev", "_ZN7android10AudioTrackD1Ev", "_ZN7android10AudioTrackD2Ev"};
 
-// All C++ class and smart-pointer reference parameters remain opaque. The exact Android 16
-// signatures in audio_track_set_abi.h share this arm64 ABI; no AudioTrack member offset is used.
+// All C++ class, string and smart-pointer references remain opaque. Select the complete
+// arm64 signature from audio_track_set_abi.h; no AudioTrack member offset is used.
 using SetFn = int32_t (*)(void*, int32_t, uint32_t, uint32_t, uint32_t, size_t, uint32_t,
         const void*, int32_t, const void*, bool, int32_t, int32_t, const void*, const void*,
         const void*, bool, float, int32_t);
+using SetWithStringFn = int32_t (*)(void*, int32_t, uint32_t, uint32_t, uint32_t, size_t, uint32_t,
+        const void*, int32_t, const void*, bool, int32_t, int32_t, const void*, const void*,
+        const void*, bool, float, int32_t, const void*);
 using ReleaseFn = void (*)(void*, const AudioBuffer*);
 using SetOutputFn = int32_t (*)(void*, int32_t);
 using DeviceUpdateFn = void (*)(void*, int32_t, const void*);
@@ -194,19 +197,20 @@ void hookReleaseBuffer(void* self, const AudioBuffer* buffer) {
     release(self, buffer);
 }
 
+template <typename Function, typename... Extra>
 int32_t hookSet(void* self, int32_t streamType, uint32_t sampleRate, uint32_t format,
         uint32_t channelMask, size_t frameCount, uint32_t flags, const void* callbackRef,
         int32_t notificationFrames, const void* sharedBufferRef, bool threadCanCallJava,
         int32_t sessionId, int32_t transferType, const void* offloadInfo,
         const void* attributionRef, const void* attributes, bool doNotReconnect,
-        float maxRequiredSpeed, int32_t selectedDeviceId) {
-    const SetFn set = original<SetFn>(g_setHook);
+        float maxRequiredSpeed, int32_t selectedDeviceId, Extra... extra) {
+    const Function set = original<Function>(g_setHook);
     if (set == nullptr) return -38;
     forgetTrack(self);
     const int32_t status = set(self, streamType, sampleRate, format, channelMask, frameCount,
             flags, callbackRef, notificationFrames, sharedBufferRef, threadCanCallJava, sessionId,
             transferType, offloadInfo, attributionRef, attributes, doNotReconnect,
-            maxRequiredSpeed, selectedDeviceId);
+            maxRequiredSpeed, selectedDeviceId, extra...);
     if (status != 0 || !g_ready.load(std::memory_order_acquire)) return status;
     const StreamFn stream = g_stream.load(std::memory_order_acquire);
     if (stream == nullptr) return status;
@@ -257,6 +261,9 @@ int32_t hookSet(void* self, int32_t streamType, uint32_t sampleRate, uint32_t fo
     }
     return status;
 }
+
+static_assert(std::is_same_v<decltype(&hookSet<SetFn>), SetFn>);
+static_assert(std::is_same_v<decltype(&hookSet<SetWithStringFn, const void*>), SetWithStringFn>);
 
 void hookDestructor0(void* self) {
     forgetTrack(self);
@@ -362,7 +369,7 @@ bool installHook(const char* symbol, void* target, void* replacement, HookSlot* 
 
 const char* install() {
     std::lock_guard<std::mutex> lock(g_installMutex);
-    if (g_sdk.load(std::memory_order_acquire) != 36) return "unsupported_platform";
+    if (!supportsPcmSdk(g_sdk.load(std::memory_order_acquire))) return "unsupported_platform";
     if (g_ready.load(std::memory_order_acquire)) return "ready";
     if (g_hookAttemptFailed) return "hook_failed";
     if (g_hook.load(std::memory_order_acquire) == nullptr
@@ -429,13 +436,16 @@ const char* install() {
                        std::memory_order_release);
 
     struct Plan { const char* name; void* address; void* replacement; HookSlot* slot; };
+    void* setReplacement = set.signature->abi == AudioTrackSetAbi::WithString
+            ? reinterpret_cast<void*>(hookSet<SetWithStringFn, const void*>)
+            : reinterpret_cast<void*>(hookSet<SetFn>);
     Plan plan[] = {
             {kSetOutputSymbol, addresses[2], reinterpret_cast<void*>(hookSetOutputDevice), &g_setOutputHook},
             {kDeviceUpdateSymbol, addresses[3], reinterpret_cast<void*>(hookDeviceUpdate), &g_deviceUpdateHook},
             {kDestructorSymbols[0], addresses[4], reinterpret_cast<void*>(hookDestructor0), &g_destructorHooks[0]},
             {kDestructorSymbols[1], addresses[5], reinterpret_cast<void*>(hookDestructor1), &g_destructorHooks[1]},
             {kDestructorSymbols[2], addresses[6], reinterpret_cast<void*>(hookDestructor2), &g_destructorHooks[2]},
-            {set.signature->symbol, addresses[0], reinterpret_cast<void*>(hookSet), &g_setHook},
+            {set.signature->symbol, addresses[0], setReplacement, &g_setHook},
             {kReleaseSymbol, addresses[1], reinterpret_cast<void*>(hookReleaseBuffer), &g_releaseHook},
     };
     bool success = true;
@@ -465,15 +475,15 @@ const char* install() {
     }
     g_ready.store(true, std::memory_order_release);
     __android_log_print(ANDROID_LOG_INFO, kLogTag,
-            "hook.ready sdk=36 abi=arm64 formats=pcm8,pcm16,pcm24packed,pcm8_24,pcm32,float32 leaseMaxMs=%llu",
-            static_cast<unsigned long long>(kMaxLeaseMs));
+            "hook.ready sdk=%d abi=arm64 formats=pcm8,pcm16,pcm24packed,pcm8_24,pcm32,float32 leaseMaxMs=%llu",
+            g_sdk.load(std::memory_order_acquire), static_cast<unsigned long long>(kMaxLeaseMs));
     return "ready";
 }
 
 void onLibraryLoaded(const char* name, void*) {
     const char* basename = name == nullptr ? nullptr : strrchr(name, '/');
     basename = basename == nullptr ? name : basename + 1;
-    if (g_sdk.load(std::memory_order_acquire) == 36 && !g_ready.load(std::memory_order_acquire)
+    if (supportsPcmSdk(g_sdk.load(std::memory_order_acquire)) && !g_ready.load(std::memory_order_acquire)
             && basename != nullptr && strcmp(basename, "libaudioclient.so") == 0) {
         const char* result = install();
         __android_log_print(ANDROID_LOG_INFO, kLogTag, "hook.late_library result=%s", result);
@@ -496,14 +506,14 @@ NativeOnModuleLoaded native_init(const NativeAPIEntries* entries) {
     g_hook.store(entries->hook_func, std::memory_order_release);
     g_unhook.store(entries->unhook_func, std::memory_order_release);
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "hook.native_api version=%u", entries->version);
-    if (g_sdk.load(std::memory_order_acquire) == 36) (void) install();
+    if (supportsPcmSdk(g_sdk.load(std::memory_order_acquire))) (void) install();
     return onLibraryLoaded;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_xyz_melodylsp_codec_mono_NativePcmMono_nativeInstall(JNIEnv* env, jclass, jint sdk) {
     g_sdk.store(sdk, std::memory_order_release);
-    if (sdk != 36) {
+    if (!supportsPcmSdk(sdk)) {
         g_ready.store(false, std::memory_order_release);
         return env->NewStringUTF("unsupported_platform");
     }

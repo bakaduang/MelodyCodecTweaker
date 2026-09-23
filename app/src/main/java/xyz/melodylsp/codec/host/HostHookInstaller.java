@@ -843,6 +843,16 @@ public final class HostHookInstaller {
                 CLASS_GAME_SOUND_REPOSITORY_CLIENT, "host.game_sound_repository_client");
         count += hookOfficialGameModeStateMethod(
                 CLASS_GAME_SOUND_REPOSITORY_SERVER, "host.game_sound_repository_server");
+        // Melody 17.5.1 moved these classes to h6 / O8. Verify their stable strings as well
+        // as d(String,int,boolean), so a reused short class name alone cannot install a hook.
+        Set<String> discovered = new HashSet<>();
+        discovered.addAll(dexKit.findClassesUsingStrings(
+                "game.sound.manager", "h6", "GameSoundManager"));
+        discovered.addAll(dexKit.findClassesUsingStrings(
+                "game.sound.repository", "O8", "macAddress", "arg1", "arg2"));
+        for (String name : discovered) {
+            count += hookOfficialGameModeStateMethod(name, "host.game_sound_discovered");
+        }
         MLog.event("game.mode.hooks", "count", count);
     }
 

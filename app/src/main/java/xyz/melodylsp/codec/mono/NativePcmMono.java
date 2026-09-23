@@ -26,7 +26,7 @@ public final class NativePcmMono {
     }
 
     static synchronized String install() {
-        if (Build.VERSION.SDK_INT != 36 || !android.os.Process.is64Bit()) {
+        if (!supportsPlatform(Build.VERSION.SDK_INT, android.os.Process.is64Bit())) {
             stage = "platform";
             error = "sdk=" + Build.VERSION.SDK_INT + ";process64=" + android.os.Process.is64Bit();
             status = "unsupported_platform";
@@ -86,6 +86,11 @@ public final class NativePcmMono {
     }
 
     static synchronized String status() { return status; }
+
+    static boolean supportsPlatform(int sdk, boolean process64Bit) {
+        // Native installation still requires a complete, recognized AudioTrack ABI.
+        return process64Bit && (sdk == 36 || sdk == 37);
+    }
 
     static synchronized String diagnostic() {
         return "stage=" + stage + ";loaded=" + loaded + ";source=" + source

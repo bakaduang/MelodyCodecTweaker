@@ -125,8 +125,8 @@ public final class WearStateHookInstaller implements AutoMonoHostClient.Producer
         if (!primary || client != null) return;
         client = AutoMonoHostClient.get(context);
         try {
-            queryVersionKnown = context.getPackageManager().getPackageInfo(
-                    AutoMonoIpc.HOST, 0).getLongVersionCode() == 16008003L;
+            queryVersionKnown = supportsStatusQuery(context.getPackageManager().getPackageInfo(
+                    AutoMonoIpc.HOST, 0).getLongVersionCode());
         } catch (Throwable ignored) { queryVersionKnown = false; }
         client.attachProducer(this, ready);
         MLog.event("mono.hook", "ok", ready, "query", queryVersionKnown && statusQuery != null);
@@ -334,6 +334,12 @@ public final class WearStateHookInstaller implements AutoMonoHostClient.Producer
                 } catch (Throwable error) { MLog.w("wear state query unavailable", error); }
             });
         } catch (Throwable error) { MLog.w("wear query handler unavailable", error); }
+    }
+
+    static boolean supportsStatusQuery(long versionCode) {
+        // P(String) sends the capability-checked 0x0109 query in these two inspected APKs.
+        // Other R8 builds must be inspected before calling an obfuscated command method.
+        return versionCode == 16008003L || versionCode == 17005001L;
     }
 
     private static String address(Object value) throws Exception {

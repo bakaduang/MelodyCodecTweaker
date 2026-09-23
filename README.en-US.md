@@ -18,11 +18,18 @@
 
 The module primarily targets `com.oplus.melody` on ColorOS / OPlus devices, working alongside the `com.android.bluetooth` and `com.oplus.wirelesssettings` scopes for more stable state reading and writing.
 
-## 2.5.0-preview.7: Automatic single-ear channel merging
+## 2.5.0-preview.8: Android 17 / Wireless Earphones 17.5.1 adaptation
+
+- Adds the exact `AudioTrack::set` ABI with a trailing string reference found in the PMA120 / ColorOS 17.0.0.103 feedback library, with complete argument forwarding. PCM hooks now accept Android 16 and 17 arm64 players with recognized symbols.
+- Enables the inspected wear-status query in Wireless Earphones 17.5.1 and locates its renamed game-mode hooks.
+- Recognizes the restored native LHDC V5 equality implementation in this system library and reports fast switching as `not_required`. The bitrate branch patch remains independent.
+- Targeted local regression checks, native instruction emulation and the release build passed. Android 17 listening, song switching, LE Audio and game transitions still require device testing. See the [adaptation evidence and verification notes](docs/android17-adaptation.md) (Chinese).
+
+## Automatic single-ear channel merging overview
 
 - Adds a toggle to the main headset and OneSpace panels, off by default and saved per headset, with confirmation when enabling or disabling it.
 - Uses left/right wearing reports to merge audio as an adapted player submits it; wearing both earbuds restores stereo playback.
-- Currently targets QQ Music and NetEase Cloud Music on Android 16 / arm64. Add the player you use to the LSPosed scope.
+- Currently targets QQ Music and NetEase Cloud Music on Android 16 or 17 / arm64. Add the player you use to the LSPosed scope.
 - Includes native loading and audio entry-point adaptation. preview.7 fixes argument forwarding during track destruction on song changes and adds fatal crash logs to diagnostic capture.
 
 See [Automatic single-ear channel merging](#automatic-single-ear-channel-merging) below for setup, implementation, and device validation status.
@@ -81,7 +88,7 @@ If this module has been helpful to you, feel free to scan the QR code to buy me 
 
 ## Requirements
 
-- Android 12 or later for the base features. Single-ear channel merging requires Android 16 / arm64 and a player running in a 64-bit process.
+- Android 12 or later for the base features. Single-ear channel merging requires Android 16 or 17 / arm64 and a player running in a 64-bit process.
 - A framework supporting libxposed API 101, such as the latest LSPosed.
 - The "Wireless Headphones" app on OPPO / OnePlus / ColorOS systems: `com.oplus.melody`.
 - It is recommended to enable these four base LSPosed scopes:
@@ -150,7 +157,7 @@ Processing inside the player also covers adapted DIRECT PCM outputs, which can b
 
 **Compatibility and validation**
 
-- The current implementation targets media tracks in QQ Music and NetEase Cloud Music on Android 16 / arm64, with matching native system audio entry points. The module's general Android 12+ requirement does not extend to this feature.
+- The current implementation targets media tracks in QQ Music and NetEase Cloud Music on Android 16 or 17 / arm64, with complete matching native system audio entry points. Unknown signatures are still rejected. The module's general Android 12+ requirement does not extend to this feature.
 - It processes streaming stereo PCM. Directly submitted compressed bitstreams, static shared buffers, non-stereo tracks, and unknown formats are skipped. A song being an MP3, AAC, or FLAC file does not itself determine compatibility; the player's actual output path does.
 - Routing checks depend on information from the system and audio tracks. Multiple outputs, system routing per app, and different LE Audio configurations still require individual validation.
 - Successful single-ear merging has been reported with **Find X9 Ultra / ColorOS 16.0.10.501 + Enco X3 in QQ Music**. NetEase Cloud Music and other device combinations still need device testing. The preview.7 song-switch fix has passed local regression checks; device retesting of consecutive song changes is pending.
@@ -332,6 +339,11 @@ Adaptation matrix (both patches cover all known version lines):
 | 16.0.8.301 | PJZ110 / PLK110 | ✅ | ✅ |
 | 16.0.8.300 | PLC110 (Dimensity 9400+) | ✅ | ✅ |
 | RMX line | RMX6688 (Dimensity 9400+) | ✅ | ✅ |
+| 17.0.0.103 | PMA120 (supplied feedback library) | Confirmed applied in feedback | Native support; verified by static analysis and instruction emulation |
+
+PMA120 17.0.0.103 is recognized by actual executable-code fingerprints. Other Android 17
+builds still use the existing signature and semantic checks; the SDK number alone never
+authorizes skipping a patch.
 
 The diagnostics page shows the patch state as two separate rows — "Bitrate Branch Patch" and "Fast-Switch Equivalence Patch". When switching to "Sound Quality Priority", the host reports the adaptation state: "Not Adapted, Please Contact Developer" when the patch is missing, or "Not Fully Adapted — Severe Stutter May Occur" when only the fast-switch patch is missing; memory replay is reminded the same way (see the governor section below).
 

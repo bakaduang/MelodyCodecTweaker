@@ -12,6 +12,8 @@ import java.io.FileReader;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -158,6 +160,11 @@ final class NativeLhdcMemoryPatch {
                     0x14000024),
     };
     private static final int MAX_RANGE_BYTES = 64 * 1024 * 1024;
+    // PMA120_17.0.0.103 restored native LHDC V5 equality. Recognize actual executable code,
+    // not a version label: the caller, dispatch, parser and comparator must all match.
+    // Evidence and virtual addresses: docs/android17-adaptation.md.
+    private static final byte[] NATIVE_QUALITY_SWITCH_ANCHOR =
+            hex("e95f87d2a9a0a6f28909c0f21f0109eb61010054");
     private static final int NATIVE_PATCH_OK = 0;
     private static final int NATIVE_PATCH_ALREADY_APPLIED = 1;
     private static volatile Method cachedPeekByteArray;
@@ -783,12 +790,54 @@ final class NativeLhdcMemoryPatch {
         if (ranges.isEmpty()) {
             return PatchResult.pending("library_not_mapped");
         }
+        int nativeMatches = 0;
+        for (MapRange range : ranges) {
+            if (!range.executable) continue;
+            byte[] image = readRange(range);
+            if (image != null) nativeMatches += countNativeQualitySwitchMatches(image);
+        }
+        if (nativeMatches == 1) {
+            return PatchResult.notRequired("native_lhdc_v5_equals_pma120_1700103");
+        }
+        if (nativeMatches > 1) return PatchResult.unsupported(0, 0);
         for (CodeBlockSpec spec : LHDC_V5_QUALITY_SWITCH_SPECS) {
             PatchResult result = applyQualitySwitchSpecUnchecked(ranges, spec);
             if (result != null) return result;
         }
         PatchResult semantic = applySemanticQualitySwitchUnchecked(ranges);
         return semantic != null ? semantic : PatchResult.unsupported(0, 0);
+    }
+
+    /** Read-only evidence check. Unknown or incomplete code continues through the old scanner. */
+    static int countNativeQualitySwitchMatches(byte[] image) {
+        int count = 0;
+        int from = 0;
+        int offset;
+        while ((offset = indexOf(image, NATIVE_QUALITY_SWITCH_ANCHOR, from)) >= 0) {
+            // Relative distances also pin both native call targets. ASLR changes no distances.
+            if ((offset & 3) == 0
+                    && matchesCodeDigest(image, offset - 0x22c, 0x2d0,
+                        "9b93ccc69aa06ad2b36cf231f359f4df424e92c00a205ed6567a2d487e3dae20")
+                    && matchesCodeDigest(image, offset - 0x2698e8, 0x7bc,
+                        "1baecf587d3d04925ea14be681c8646c1fc43ec015d34b5fc6e1dae6dca56593")
+                    && matchesCodeDigest(image, offset - 0x2647f4, 0x8c,
+                        "bc33c8b28862408b9475adcf6958e3ba5d7e05853875739dc8c63db760281953")) {
+                count++;
+            }
+            from = offset + NATIVE_QUALITY_SWITCH_ANCHOR.length;
+        }
+        return count;
+    }
+
+    private static boolean matchesCodeDigest(byte[] image, int offset, int length, String expected) {
+        if (offset < 0 || offset > image.length - length) return false;
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            digest.update(image, offset, length);
+            return MessageDigest.isEqual(hex(expected), digest.digest());
+        } catch (NoSuchAlgorithmException impossible) {
+            throw new AssertionError(impossible); // SHA-256 is required by Android and Java.
+        }
     }
 
     /**

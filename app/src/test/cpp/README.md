@@ -3,7 +3,8 @@ They cover all six standard PCM representations, independent left/right samples,
 extremes, cancellation, nonfinite floats, released-byte boundaries, route and lease rejection,
 route recovery, DEFAULT/static transfer modes, the bounded platform vector view, reused track
 addresses, registry capacity, per-generation counters, and exact AudioTrack initialization ABI
-selection (integer aliases, the device's named enums, missing symbols, aliases and ambiguity).
+selection (integer aliases, the device's named enums, Android 17's trailing string reference,
+missing symbols, compatible aliases and incompatible ABI ambiguity).
 
 With an ordinary host C++ compiler, from the repository root:
 
@@ -60,7 +61,7 @@ earlier real timestamp from the same generation while frame totals remain atomic
 
 These host tests validate PCM arithmetic, concurrency, and fail-closed policy. They are not an ARM
 hardware stress test or a ThreadSanitizer run. They cannot establish whether a
-particular ROM exports the exact Android 16 symbols, whether its optimized AudioTrack code reaches
+particular ROM exports the exact supported Android 16/17 symbols, whether its optimized AudioTrack code reaches
 the hooked releaseBuffer entry, or whether the player has actually sent the modified frames to the
 earbuds. Those require the native install diagnostics, growing mixed-frame counters, and the
 left-only/right-only listening check on the phone.
@@ -84,3 +85,9 @@ negative control detects the lost VTT before dereferencing it, so no crash is re
 This host test validates forwarding and real C++ object teardown. Inspect the release ARM64
 wrapper separately to confirm x1 is preserved across cleanup; phone song-switch testing is
 still required to confirm the complete player lifecycle.
+
+For the Android 17 adaptation, `scripts/verify_pcm_hook_abi.py` additionally executes both
+wrappers from the actual unstripped release ARM64 library with Unicorn and pyelftools. It
+clobbers caller-saved registers during simulated registry cleanup, verifies all register and
+stack arguments (including the new string reference), and checks the native failure return.
+See `docs/android17-adaptation.md` for the invocation and the separate native LHDC check.

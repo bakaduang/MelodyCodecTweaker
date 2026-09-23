@@ -343,14 +343,23 @@ void exactAudioTrackSetAbi() {
     });
     expect(result.address == first && !result.ambiguous);
     expect(result.signature != nullptr && sameText(result.signature->label, "named_audio_enums"));
+    expect(result.signature->abi == AudioTrackSetAbi::Legacy);
+    result = findAudioTrackSet([=](const char* name) {
+        return sameText(name, kAudioTrackSetSignatures[2].symbol) ? first : nullptr;
+    });
+    expect(result.address == first && result.signature->abi == AudioTrackSetAbi::WithString);
     result = findAudioTrackSet([=](const char* name) {
         return sameText(name, kAudioTrackSetSignatures[0].symbol) ? first : nullptr;
     });
     expect(result.address == first && result.signature == &kAudioTrackSetSignatures[0]);
     result = findAudioTrackSet([](const char*) -> void* { return nullptr; });
     expect(result.address == nullptr && result.signature == nullptr && !result.ambiguous);
-    result = findAudioTrackSet([=](const char*) { return first; });
+    result = findAudioTrackSet([=](const char* name) {
+        return sameText(name, kAudioTrackSetSignatures[2].symbol) ? nullptr : first;
+    });
     expect(result.address == first && !result.ambiguous);  // actual symbol aliases are unambiguous
+    result = findAudioTrackSet([=](const char*) { return first; });
+    expect(result.address == nullptr && result.ambiguous); // incompatible ABIs cannot alias
     result = findAudioTrackSet([=](const char* name) {
         return sameText(name, deviceExport) ? first : second;
     });
@@ -360,6 +369,8 @@ void exactAudioTrackSetAbi() {
         return sameText(name, "_ZN7android10AudioTrack3setE") ? first : nullptr;
     });
     expect(result.address == nullptr && !result.ambiguous);
+    expect(supportsPcmSdk(36) && supportsPcmSdk(37));
+    expect(!supportsPcmSdk(35) && !supportsPcmSdk(38) && !supportsPcmSdk(0));
 }
 
 int runTests() {
